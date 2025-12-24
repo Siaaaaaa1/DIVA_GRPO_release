@@ -109,10 +109,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-endpoint = 'https://mmu-aigc-hetu1-openai-eastus.openai.azure.com/'
-deployment = 'mmu-aigc-hetu1-openai-eastus-o3'
-subscription_key = '19v1LQGQfjizO2iy7E2fXDEPapXhUhHkgMGwpwgeaT0Slt63mvnpJQQJ99BHACYeBjFXJ3w3AAABACOGMijR'
-
+endpoint = '**'
+deployment = '**'subscription_key = '**'
 
 def parse_steps(response: str) -> List[str]:
     """Parse the steps from the API response by sequentially matching step tags starting from step1.

@@ -67,10 +67,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-endpoint = 'https://mmu-aigc-hetu1-openai-eastus.openai.azure.com/'
-deployment = 'mmu-aigc-hetu1-openai-eastus-o3'
-subscription_key = '19v1LQGQfjizO2iy7E2fXDEPapXhUhHkgMGwpwgeaT0Slt63mvnpJQQJ99BHACYeBjFXJ3w3AAABACOGMijR'
-
+endpoint = '**'
+deployment = '**'
+subscription_key = '**'
 def add_image_tag_if_missing(text: str) -> str:
     """
     检查字符串中是否有<image>标签，如果没有则在字符串前拼接:

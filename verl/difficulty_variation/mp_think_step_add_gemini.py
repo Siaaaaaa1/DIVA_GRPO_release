@@ -112,10 +112,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-endpoint = 'https://mmu-aigc-hetu1-openai-eastus.openai.azure.com/'
-deployment = 'mmu-aigc-hetu1-openai-eastus-o3'
-subscription_key = '19v1LQGQfjizO2iy7E2fXDEPapXhUhHkgMGwpwgeaT0Slt63mvnpJQQJ99BHACYeBjFXJ3w3AAABACOGMijR'
-safety_settings = [
+endpoint = '**'
+deployment = '**'subscription_key = '**'safety_settings = [
     types.SafetySetting(
         category="HARM_CATEGORY_DANGEROUS_CONTENT",
         threshold="BLOCK_ONLY_HIGH",
