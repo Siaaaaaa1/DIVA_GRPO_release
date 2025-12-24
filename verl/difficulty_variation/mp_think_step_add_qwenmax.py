@@ -191,7 +191,7 @@ class GeminiClient:
     def __init__(self):
         # 使用基于密钥的身份验证初始化 Azure OpenAI 客户端
         self.client = OpenAI(
-            api_key="sk-25678a0b18d24afa86d3185f736fd886",
+            api_key="sk-**********************************",
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
         return

@@ -173,7 +173,7 @@ def process_row(row: Dict[str, Any], max_retries: int = 5) -> Dict[str, Any]:
 def request_to_qwen3_text(prompt_text, input_text):
     logger.debug("Preparing image for QWEN3 API request")
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     messages = [

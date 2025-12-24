@@ -316,7 +316,7 @@ def request_to_qwen3_text_only(input_text):
     logger.debug("Preparing text-only request for QWEN3 API")
     
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     
@@ -373,7 +373,7 @@ def request_to_qwen3_text_image(prompt_text, ground_truth, input_text, input_ima
     logger.info(f"Base64 encoded image length: {len(base64_image)}")
     
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     

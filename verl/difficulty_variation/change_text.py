@@ -74,7 +74,7 @@ def read_json_to_list(file_path):
 
 def request_to_qwen3(input_text):
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
 
@@ -91,7 +91,7 @@ def request_to_qwen3(input_text):
 
 def request_to_qwen3(input_text,input_image):
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
 
@@ -132,7 +132,7 @@ def request_to_qwen3_text_image(prompt_text, input_text, input_image):
     base64_image = base64.b64encode(input_image).decode('utf-8')
     
     client = OpenAI(
-        api_key="sk-25678a0b18d24afa86d3185f736fd886",
+        api_key="sk-**********************************",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
 
