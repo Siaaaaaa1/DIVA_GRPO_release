@@ -266,7 +266,7 @@ def compute_grpo_passk_outcome_advantage(
 @torch.no_grad()
 def compute_grpo_outcome_advantage_kl_cov(
     token_level_rewards: torch.Tensor,   # (bs, T)
-    response_mask: torch.Tensor,         # (bs, T)  >0 的位置参与
+    response_mask: torch.Tensor,         # (bs, T)
     index: torch.Tensor,                 # (bs,)
     eps: float = 1e-6,
     log_prob: Optional[torch.Tensor] = None,      # (bs, T)
@@ -276,62 +276,61 @@ def compute_grpo_outcome_advantage_kl_cov(
     ppo_kl_coef: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    返回：
-        advantages: (bs, T) —— 若开启 apply_cov_kl，会在 top-k 协方差的 token 位置加入 KL 惩罚（减去 ppo_kl_coef*|Δlogπ|）
-        returns:    (bs, T) —— 原始 GRPO 的 Z-score 基线（未加入 KL）
+    Returns:
+        advantages: (bs, T) - If apply_cov_kl is enabled, KL penalty is added to top-k covariance token positions (subtract ppo_kl_coef*|delta_logp|)
+        returns:    (bs, T) - Z-score baseline for original GRPO (without KL)
     """
     assert k_ratio > 0, "k_ratio should be larger than 0."
     device = token_level_rewards.device
     dtype = token_level_rewards.dtype
 
-    # 1) 每个响应的总分  (bs,)
+    # 1) Total score for each response (bs,)
     scores = token_level_rewards.sum(dim=-1)  # (bs,)
 
-    # 2) 按 index 分组计算均值与标准差（GRPO 要求每组 >1）
-    # 2) 按 index 分组计算均值与标准差（GRPO 要求每组 >1）
+    # 2) Group by index to compute mean and std (GRPO requires group size > 1)
     id2score = defaultdict(list)
     bsz = scores.shape[0]
     for i in range(bsz):
-        id2score[index[i]].append(scores[i])  # 直接使用 index[i]
+        id2score[index[i]].append(scores[i])
 
     id2mean, id2std = {}, {}
     for gid, lst in id2score.items():
-        assert len(lst) > 1, "GRPO需要每组样本数>1"
-        stack = torch.stack(lst)  # 设备与 dtype 与 scores 一致
+        assert len(lst) > 1, "GRPO needs rollout.n > 1."
+        stack = torch.stack(lst)
         id2mean[gid] = stack.mean()
         id2std[gid]  = stack.std(unbiased=True)
 
-    # 3) Z-score 到每条响应
+    # 3) Z-score for each response
     scores_z = scores.clone()
     for i in range(bsz):
         gid = index[i]
         scores_z[i] = (scores[i] - id2mean[gid]) / (id2std[gid] + eps)
 
-    # 4) 展开到 token 级，并按 mask 应用
+    # 4) Expand to token level and apply mask
     returns = scores_z.unsqueeze(-1) * response_mask  # (bs, T)
 
-    # 5) 初始 advantages 与 returns 相同
+    # 5) Initial advantages equal to returns
     advantages = returns.clone()
 
-    # 6) （可选）对 top-k 协方差的 token 注入 KL 惩罚
+    # 6) (Optional) Inject KL penalty for top-k covariance tokens
     if apply_cov_kl and (log_prob is not None) and (old_log_prob is not None):
-        # Δlogπ 与 |Δlogπ|
+        # delta_logp and |delta_logp|
         delta_logp = (log_prob - old_log_prob)
         abs_kl = delta_logp.abs()
 
-        # 只在有效 token 上做选择
+        # Select only valid tokens
         valid = (response_mask > 0)
         if valid.any():
             B, T = advantages.shape
 
-            # 扁平索引（保持 device 一致）
+            # Flat index (keep device consistency)
             flat_valid_idx = torch.nonzero(valid.reshape(-1), as_tuple=True)[0].to(device)
 
-            # 取出有效位置上的 adv 与 logp，用于“协方差打分”，不反传
+            # Extract adv and logp at valid positions for covariance scoring (no gradient)
             adv_flat  = advantages[valid].detach().reshape(-1)     # (N_valid,)
             logp_flat = log_prob[valid].detach().reshape(-1)       # (N_valid,)
 
-            # 去中心化乘积作为协方差打分（未归一化即可用于排序）
+            # Centered product as covariance score (normalization not needed for ranking)
             adv_c  = adv_flat - adv_flat.mean()
             logp_c = logp_flat - logp_flat.mean()
             score = adv_c * logp_c                                 # (N_valid,)
@@ -341,18 +340,18 @@ def compute_grpo_outcome_advantage_kl_cov(
 
             if k_num > 0:
                 topk_local = torch.topk(score, k_num, largest=True).indices
-                # 映回到原张量的扁平索引
+                # Map back to flat indices of original tensor
                 topk_flat = flat_valid_idx[topk_local]             # (k_num,)
 
                 rows = (topk_flat // T).long()
                 cols = (topk_flat %  T).long()
 
-                # 在这些 token 上对 advantage 加入 KL 惩罚（减去 ppo_kl_coef*|Δlogπ|）
-                # 说明：这样做使得 -adv*ratio ≈ -A*ratio + ppo_kl_coef*|Δlogπ|*ratio，
-                # 当 ratio≈1（小步更新）时，与先前“在损失里加 KL 项”的效果更贴近。
+                # Apply KL penalty to advantage on these tokens
+                # Note: This makes -adv*ratio approx -A*ratio + ppo_kl_coef*|delta_logp|*ratio,
+                # which aligns with adding a KL term in the loss when ratio approx 1.
                 advantages[rows, cols] = advantages[rows, cols] - ppo_kl_coef * abs_kl[rows, cols]
 
-    # 返回顺序：第一个 advantage，第二个 returns
+    # Return order: advantages first, then returns
     return advantages.to(dtype=dtype, device=device), returns.to(dtype=dtype, device=device)
 
 @register_adv_estimator(AdvantageEstimator.RLOO)

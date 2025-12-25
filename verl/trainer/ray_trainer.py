@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,7 @@
 # limitations under the License.
 """
 PPO Trainer with Ray-based single controller.
-This trainer supports model-agonistic model initialization with huggingface.
+This trainer supports model-agnostic model initialization with huggingface.
 """
 
 import json
@@ -72,14 +72,12 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
-from collections import defaultdict
 
 
 class Role(IntEnum):
     """
     To create more roles dynamically, you can subclass Role and add new members
     """
-
     Actor = auto()
     Rollout = auto()
     ActorRollout = auto()
@@ -174,11 +172,11 @@ def compute_advantage(
 
     token_level_rewards = data.batch["token_level_rewards"]
     vector_data = {
-        "advantages": advantages.cpu().numpy()[:, 0],  # 取第一列
-        "token_rewards": token_level_rewards.cpu().numpy().sum(axis=-1),  # 计算token rewards总和
+        "advantages": advantages.cpu().numpy()[:, 0],  # Take the first column
+        "token_rewards": token_level_rewards.cpu().numpy().sum(axis=-1),  # Sum token rewards
     }
-    log_path = os.path.join(all_log_path,'full_vector.log')
-    save_full_vectors_to_json_origin_grpo(data, vector_data, log_path) ## path
+    log_path = os.path.join(all_log_path, 'full_vector.log')
+    save_full_vectors_to_json_origin_grpo(data, vector_data, log_path)
 
     return data
 
@@ -263,7 +261,7 @@ class RayPPOTrainer:
         ):
             raise ValueError("GRPO and RLOO algorithm need `config.worker.rollout.n > 1`.")
 
-        # TODO: 如果开启Difficulty_Adaptation开关，根据rollout次数进行修正，与之前代码有区别！
+        # TODO: If Difficulty_Adaptation is enabled, modify steps based on rollout counts.
         if config.trainer.max_steps is not None:
             self.training_steps = config.trainer.max_steps
         elif config.data.mini_rollout_batch_size is not None:
@@ -311,7 +309,6 @@ class RayPPOTrainer:
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
-        # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
         all_wg: dict[str, FSDPWorker] = {}
         self.wg_dicts = []
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
@@ -319,7 +316,7 @@ class RayPPOTrainer:
             wg_dict = self.ray_worker_group_cls(resource_pool=resource_pool, ray_cls_with_init=worker_dict_cls)
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
             all_wg.update(spawn_wg)
-            # keep the referece of WorkerDict to support ray >= 2.31. Ref: https://github.com/ray-project/ray/pull/45699
+            # keep the reference of WorkerDict to support ray >= 2.31. Ref: https://github.com/ray-project/ray/pull/45699
             self.wg_dicts.append(wg_dict)
 
         if self.use_critic:
@@ -334,61 +331,63 @@ class RayPPOTrainer:
         self.actor_rollout_ref_wg = all_wg["actor_rollout_ref"]
         self.actor_rollout_ref_wg.init_model()
 
-    # TODO: 将训练数据集保存为与检查点同目录的parquet文件（仅在GPU 0上执行）
     def _save_dataset(self) -> None:
-        
+        """
+        Save the training dataset as a parquet file in the checkpoint directory.
+        Only executes on GPU 0.
+        """
         try:
             import torch
-            # 检查当前是否在GPU 0上，如果不是则直接返回
+            # Check if currently on GPU 0, otherwise skip
             if torch.cuda.is_available() and torch.cuda.current_device() != 0:
-                print("当前不在GPU 0上，跳过数据集保存")
+                print("Not on GPU 0, skipping dataset save.")
                 return
 
-            import pyarrow.parquet as pq
             import pandas as pd
+            from datasets import Dataset, DatasetDict
             
-            # 从dataloader获取数据集
+            # Get dataset from dataloader
             dataset = self.train_dataloader.dataset
             
-            # 处理不同的数据集类型
+            # Handle different dataset types
             if hasattr(dataset, 'dataset') and isinstance(dataset.dataset, (Dataset, DatasetDict)):  
-                # 处理RLHFDataset类型（内部包含HuggingFace数据集）
+                # Handle RLHFDataset type (contains HuggingFace dataset)
                 hf_dataset = dataset.dataset
                 if isinstance(hf_dataset, DatasetDict):
-                    # 如果是DatasetDict，默认取第一个split
+                    # Default to the first split if DatasetDict
                     hf_dataset = next(iter(hf_dataset.values()))
                 df = hf_dataset.to_pandas()
                 
-            elif hasattr(dataset, 'to_pandas'):  # 数据集自带to_pandas方法
+            elif hasattr(dataset, 'to_pandas'):  # Dataset has built-in to_pandas
                 df = dataset.to_pandas()
                 
-            elif hasattr(dataset, '__array__'):  # numpy数组类型
+            elif hasattr(dataset, '__array__'):  # Numpy array
                 df = pd.DataFrame(dataset)
                 
-            elif hasattr(dataset, '__iter__'):  # 可迭代数据集
-                # 先转换为列表再转为DataFrame
+            elif hasattr(dataset, '__iter__'):  # Iterable dataset
+                # Convert to list then DataFrame
                 data_list = list(dataset)
-                if data_list and isinstance(data_list[0], dict):  # 元素是字典类型
+                if data_list and isinstance(data_list[0], dict):  # Elements are dicts
                     df = pd.DataFrame(data_list)
-                else:  # 其他可迭代类型
+                else:  # Other iterable types
                     df = pd.DataFrame({'data': data_list})
                     
             else:
-                raise ValueError("不支持的数据集类型 - 无法转换为DataFrame")
+                raise ValueError("Unsupported dataset type - cannot convert to DataFrame")
                 
-            # 创建检查点目录（如果不存在）
+            # Create checkpoint directory if it doesn't exist
             folder_path = self.config.trainer.save_checkpoint_path
             os.makedirs(folder_path, exist_ok=True)
-            # 定义parquet文件路径
+            # Define parquet path
             parquet_path = os.path.join(folder_path, f"MMK12_Adapter.parquet")
             
-            # 保存为parquet文件
+            # Save as parquet
             df.to_parquet(parquet_path)
             
-            print(f"成功保存数据集到 {parquet_path}")
+            print(f"Successfully saved dataset to {parquet_path}")
             
         except Exception as e:
-            print(f"保存数据集失败: {str(e)}")
+            print(f"Failed to save dataset: {str(e)}")
             raise
 
     def _save_checkpoint(self) -> None:
@@ -415,7 +414,7 @@ class RayPPOTrainer:
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_path)
 
-        #TODO: 添加保存数据相关设置
+        # TODO: Add data saving configuration
         if self.config.trainer.Save_Data == True:
             self._save_dataset()
             
@@ -553,279 +552,6 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
-    # def _make_batch_data(self, metrics: dict[str, Any]) -> DataProto:
-    #     # ==================== DEBUG SETUP ====================
-    #     import os
-    #     import torch
-    #     from PIL import Image
-    #     import json
-    #     from datetime import datetime
-        
-    #     debug_dir = "/mmu_cd_ssd/zhangzhenyu06/workspace/Rebuttal/Help"
-    #     os.makedirs(debug_dir, exist_ok=True)
-    #     debug_log_path = os.path.join(debug_dir, "debug_log.txt")
-        
-    #     def debug_print(msg, data=None):
-    #         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    #         with open(debug_log_path, "a") as f:
-    #             if data is not None:
-    #                 f.write(f"[{timestamp}] {msg}\n")
-    #                 f.write(f"  Type: {type(data)}\n")
-    #                 if isinstance(data, (torch.Tensor, np.ndarray)):
-    #                     f.write(f"  Shape: {data.shape}, Dtype: {data.dtype}, Min: {data.min()}, Max: {data.max()}\n") #, Mean: {data.mean()}
-    #                 elif isinstance(data, (list, dict, tuple)):
-    #                     f.write(f"  Length: {len(data)}, Value: {str(data)[:50]}\n")
-    #                 else:
-    #                     f.write(f"  Value: {str(data)[:50]}\n")
-    #                 f.write("-" * 80 + "\n")
-    #             else:
-    #                 f.write(f"[{timestamp}] {msg}\n")
-    #                 f.write("-" * 80 + "\n")
-        
-    #     def save_images_from_batch(batch, step, prefix=""):
-    #         """Save images from multi_modal_data if present"""
-    #         if "multi_modal_data" in batch.non_tensor_batch:
-    #             mm_data = batch.non_tensor_batch["multi_modal_data"]
-    #             if "image" in mm_data:
-    #                 images = mm_data["image"]
-    #                 if not isinstance(images, list):
-    #                     images = [images]
-                    
-    #                 for idx, img in enumerate(images):
-    #                     if isinstance(img, (Image.Image, torch.Tensor, np.ndarray)):
-    #                         save_path = os.path.join(debug_dir, f"{prefix}_step{step}_img{idx}.png")
-    #                         if isinstance(img, torch.Tensor):
-    #                             img = img.cpu().numpy()
-    #                         if isinstance(img, np.ndarray):
-    #                             if img.dtype != np.uint8:
-    #                                 img = (img * 255).astype(np.uint8)
-    #                             # Handle CHW format
-    #                             if img.ndim == 3 and img.shape[0] in [1, 3]:
-    #                                 img = img.transpose(1, 2, 0)
-    #                             img = Image.fromarray(img.squeeze())
-    #                         img.save(save_path)
-    #                         debug_print(f"Saved image: {save_path}")
-        
-    #     debug_print("=" * 50)
-    #     debug_print(f"START _make_batch_data - Config: rollout_n={self.config.worker.rollout.n}, "
-    #                 f"rollout_batch_size={self.config.data.rollout_batch_size}")
-    #     # =====================================================
-        
-    #     batch = None
-    #     all_metrics = defaultdict(list)
-    #     num_try_make_batch = 0
-    #     print("Start generating batch...")
-    #     debug_print("Start generating batch...")
-        
-    #     while True:
-    #         num_try_make_batch += 1
-    #         debug_print(f"=== Loop iteration {num_try_make_batch} ===")
-            
-    #         try:
-    #             batch_dict = next(self.data_iterator)
-    #             debug_print(f"batch_dict keys: {list(batch_dict.keys())}", batch_dict)
-    #         except StopIteration:
-    #             self.data_iterator = iter(self.train_dataloader)
-    #             batch_dict = next(self.data_iterator)
-    #             debug_print("Data iterator exhausted, reinitialized")
-            
-    #         meta_info = {
-    #             "min_pixels": self.config.data.min_pixels,
-    #             "max_pixels": self.config.data.max_pixels,
-    #             "video_fps": self.config.data.video_fps,
-    #         }
-            
-    #         new_batch: DataProto = DataProto.from_single_dict(batch_dict, meta_info=meta_info)
-    #         debug_print("new_batch created", new_batch)
-    #         debug_print("new_batch.batch keys", list(new_batch.batch.keys()))
-    #         debug_print("new_batch.non_tensor_batch keys", list(new_batch.non_tensor_batch.keys()))
-            
-    #         new_batch.non_tensor_batch["uid"] = np.array(
-    #             [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
-    #         )
-    #         debug_print("Generated UIDs", new_batch.non_tensor_batch["uid"])
-            
-    #         # Save images from original batch
-    #         save_images_from_batch(new_batch, num_try_make_batch, "original")
-            
-    #         # pop those keys for generation
-    #         gen_batch = new_batch.pop(
-    #             batch_keys=["input_ids", "attention_mask", "position_ids"],
-    #             non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
-    #             meta_info_keys=["min_pixels", "max_pixels", "video_fps"],
-    #         )
-    #         debug_print("gen_batch created after pop", gen_batch)
-            
-    #         # generate a batch
-    #         gen_batch_output = self.actor_rollout_ref_wg.generate_sequences(gen_batch)
-    #         debug_print("gen_batch_output received", gen_batch_output)
-            
-    #         if self.config.algorithm.adv_estimator == "remax":
-    #             debug_print("Using ReMax estimator")
-    #             gen_baseline_batch = deepcopy(gen_batch)
-    #             gen_baseline_batch.meta_info["temperature"] = 0
-    #             gen_baseline_batch.meta_info["n"] = 1
-    #             gen_baseline_output = self.actor_rollout_ref_wg.generate_sequences(gen_baseline_batch)
-    #             debug_print("gen_baseline_output received", gen_baseline_output)
-                
-    #             new_batch = new_batch.union(gen_baseline_output)
-    #             debug_print("new_batch after union with baseline", new_batch)
-                
-    #             reward_baseline_tensor, _ = ray.get(self.reward_fn.compute_reward.remote(new_batch))
-    #             debug_print("reward_baseline_tensor computed", reward_baseline_tensor)
-                
-    #             reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
-    #             debug_print("reward_baseline_tensor after sum", reward_baseline_tensor)
-                
-    #             new_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
-    #             new_batch.batch["reward_baselines"] = reward_baseline_tensor
-    #             debug_print("reward_baselines added to batch", new_batch.batch["reward_baselines"])
-                
-    #             del gen_baseline_batch, gen_baseline_output
-            
-    #         #######################################################################
-    #         #TODO: 当开启设置时，为每个唯一id生成一个global_uid
-    #         if self.config.trainer.DIVA_GRPO:
-    #             debug_print("DIVA_GRPO mode enabled")
-                
-    #             # 获取 id 数组和问题数组
-    #             ids = new_batch.non_tensor_batch["id"]
-    #             debug_print("Original IDs from batch", ids)
-                
-    #             id_counts = {} 
-    #             for id_val in ids:
-    #                 id_counts[id_val] = id_counts.get(id_val, 0) + 1
-    #             debug_print("ID counts", id_counts)
-                
-    #             # 为每个唯一id生成一个global_uid
-    #             unique_ids = list(id_counts.keys())
-    #             debug_print(f"Found {len(unique_ids)} unique IDs", unique_ids)
-                
-    #             id_to_uid = {id_val: str(uuid.uuid4()) for id_val in unique_ids}
-    #             debug_print("ID to Global UID mapping", id_to_uid)
-                
-    #             # 创建global_uids数组，确保相同id对应相同global_uid
-    #             global_uids = np.array([id_to_uid[id_val] for id_val in ids], dtype=object)
-    #             debug_print("Generated global_uids array", global_uids)
-                
-    #             # 将global_uids添加到batch中
-    #             new_batch.non_tensor_batch["global_uid"] = global_uids
-    #             debug_print("global_uid added to batch", new_batch.non_tensor_batch["global_uid"])
-                
-    #             # Save visualization of ID mapping
-    #             mapping_info = {
-    #                 "iteration": num_try_make_batch,
-    #                 "original_ids": ids.tolist() if hasattr(ids, 'tolist') else list(ids),
-    #                 "global_uids": global_uids.tolist() if hasattr(global_uids, 'tolist') else list(global_uids),
-    #                 "id_counts": id_counts,
-    #                 "id_to_uid_mapping": id_to_uid
-    #             }
-    #             mapping_path = os.path.join(debug_dir, f"id_mapping_step_{num_try_make_batch}.json")
-    #             with open(mapping_path, "w") as f:
-    #                 json.dump(mapping_info, f, indent=2)
-    #             debug_print(f"Saved ID mapping to {mapping_path}")
-                
-    #         #######################################################################
-            
-    #         # repeat to align with repeated responses in rollout
-    #         debug_print(f"Repeating batch {self.config.worker.rollout.n} times (interleave=True)")
-    #         new_batch = new_batch.repeat(repeat_times=self.config.worker.rollout.n, interleave=True)
-    #         debug_print("new_batch after repeat", new_batch)
-            
-    #         new_batch = new_batch.union(gen_batch_output)
-    #         debug_print("new_batch after union with gen_batch_output", new_batch)
-    #         debug_print("new_batch.batch keys after union", list(new_batch.batch.keys()))
-    #         debug_print("new_batch.non_tensor_batch keys after union", list(new_batch.non_tensor_batch.keys()))
-            
-    #         # filter group
-    #         if self.config.algorithm.online_filtering:
-    #             debug_print("Applying online filtering")
-    #             reward_tensor, reward_metrics = ray.get(self.reward_fn.compute_reward.remote(new_batch))
-    #             debug_print("Computed reward_tensor", reward_tensor)
-    #             debug_print("Received reward_metrics", dict(reward_metrics))
-                
-    #             new_batch.batch["token_level_scores"] = reward_tensor
-    #             debug_print("Added token_level_scores to batch", new_batch.batch["token_level_scores"])
-                
-    #             for k, v in reward_metrics.items():
-    #                 all_metrics[k].extend(v)
-                
-    #             filter_scores = reward_metrics[self.config.algorithm.filter_key]
-    #             debug_print("filter_scores", filter_scores)
-    #             debug_print(f"Filter key: {self.config.algorithm.filter_key}, "
-    #                     f"Range: ({self.config.algorithm.filter_low}, {self.config.algorithm.filter_high})")
-                
-    #             uids = new_batch.non_tensor_batch["uid"]
-    #             debug_print("UIDs for filtering", uids)
-                
-    #             uid2scores = defaultdict(list)
-    #             for uid, score in zip(uids, filter_scores):
-    #                 uid2scores[uid].append(score)
-    #             debug_print("uid2scores mapping", dict(uid2scores))
-                
-    #             uid2mean = {uid: np.mean(scores) for uid, scores in uid2scores.items()}
-    #             debug_print("uid2mean (average scores)", uid2mean)
-                
-    #             kept_uids = [
-    #                 uid
-    #                 for uid, avg_score in uid2mean.items()
-    #                 if avg_score > self.config.algorithm.filter_low and avg_score < self.config.algorithm.filter_high
-    #             ]
-    #             debug_print("kept_uids after filtering", kept_uids)
-    #             debug_print(f"Kept {len(kept_uids)} out of {len(uid2mean)} UIDs")
-                
-    #             kept_sample_idxs = [idx for idx, uid in enumerate(uids) if uid in kept_uids]
-    #             debug_print("kept_sample_idxs", kept_sample_idxs)
-                
-    #             if len(kept_sample_idxs) == 0:
-    #                 debug_print("ERROR: No samples kept after filtering!")
-    #                 raise RuntimeError("No sample is kept after filtering. Please check your data.")
-                
-    #             new_batch = new_batch[kept_sample_idxs]
-    #             debug_print("new_batch after filtering", new_batch)
-                
-    #             # Save filtered images
-    #             save_images_from_batch(new_batch, num_try_make_batch, "filtered")
-            
-    #         batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
-    #         debug_print("Current combined batch", batch)
-            
-    #         current_batch_size = len(batch) // self.config.worker.rollout.n
-    #         rollout_batch_size = self.config.data.rollout_batch_size
-            
-    #         debug_print(f"Batch size check: current_batch_size={current_batch_size}, "
-    #                 f"rollout_batch_size={rollout_batch_size}, "
-    #                 f"raw_batch_len={len(batch)}, "
-    #                 f"rollout_n={self.config.worker.rollout.n}")
-            
-    #         if current_batch_size < rollout_batch_size:
-    #             print(f"{current_batch_size=} < {rollout_batch_size=}")
-    #             debug_print(f"Batch too small, continuing... {current_batch_size} < {rollout_batch_size}")
-                
-    #             max_try_make_batch = self.config.trainer.max_try_make_batch
-    #             if max_try_make_batch <= 0 or num_try_make_batch < max_try_make_batch:
-    #                 print(f"{num_try_make_batch=}. Continue generating...")
-    #             else:
-    #                 debug_print(f"Max attempts reached: {num_try_make_batch} >= {max_try_make_batch}")
-    #                 raise RuntimeError(
-    #                     f"{num_try_make_batch=} >= {max_try_make_batch=}. Generated too many. Please check your data."
-    #                 )
-    #         else:
-    #             print(f"{current_batch_size=} >= {rollout_batch_size=}. Finish generating.")
-    #             debug_print(f"Batch ready: {current_batch_size} >= {rollout_batch_size}")
-                
-    #             if self.config.algorithm.online_filtering:
-    #                 reduced_metrics = reduce_metrics(all_metrics)
-    #                 debug_print("Reduced metrics after filtering", reduced_metrics)
-    #                 metrics.update({f"reward/{k}": v for k, v in reduced_metrics.items()})
-                
-    #             final_batch_size = self.config.data.rollout_batch_size * self.config.worker.rollout.n
-    #             result_batch = batch[:final_batch_size]
-    #             debug_print("Returning final batch", result_batch)
-    #             debug_print("=" * 50)
-                
-    #             return result_batch
-
     def _make_batch_data(self, metrics: dict[str, Any]) -> DataProto:
         batch = None
         all_metrics = defaultdict(list)
@@ -845,7 +571,6 @@ class RayPPOTrainer:
                 "video_fps": self.config.data.video_fps,
             }
             new_batch: DataProto = DataProto.from_single_dict(batch_dict, meta_info=meta_info)
-
 
             # pop those keys for generation
             gen_batch = new_batch.pop(
@@ -874,26 +599,25 @@ class RayPPOTrainer:
             new_batch.non_tensor_batch["uid"] = np.array(
                 [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
             )
-            #######################################################################
-            #TODO: 当开启设置时，为每个唯一id生成一个global_uid
+            
+            # TODO: Generate a global_uid for each unique id when the setting is enabled.
             if self.config.trainer.DIVA_GRPO:
-                # 获取 id 数组和问题数组
+                # Get id array
                 ids = new_batch.non_tensor_batch["id"]
 
                 id_counts = {} 
                 for id_val in ids:
                     id_counts[id_val] = id_counts.get(id_val, 0) + 1
 
-                # 为每个唯一id生成一个global_uid
+                # Generate a global_uid for each unique id
                 unique_ids = list(id_counts.keys())
                 id_to_uid = {id_val: str(uuid.uuid4()) for id_val in unique_ids}
                 
-                # 创建global_uids数组，确保相同id对应相同global_uid
+                # Create global_uids array ensuring same id maps to same global_uid
                 global_uids = np.array([id_to_uid[id_val] for id_val in ids], dtype=object)
                 
-                # 将global_uids添加到batch中
+                # Add global_uids to the batch
                 new_batch.non_tensor_batch["global_uid"] = global_uids
-            #######################################################################
 
             # repeat to align with repeated responses in rollout
             new_batch = new_batch.repeat(repeat_times=self.config.worker.rollout.n, interleave=True)
@@ -929,7 +653,7 @@ class RayPPOTrainer:
                         new_batch.non_tensor_batch.pop(key)
 
             batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
-            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!! batch lenght is === {len(batch)}")
+            print(f"Batch length: {len(batch)}")
             current_batch_size = len(batch) // self.config.worker.rollout.n
             rollout_batch_size = self.config.data.rollout_batch_size
             if current_batch_size < rollout_batch_size:
@@ -948,27 +672,23 @@ class RayPPOTrainer:
 
                 return batch[: self.config.data.rollout_batch_size * self.config.worker.rollout.n]
 
-    # TODO:DIVAGRPO的自适应优势计算方法
-    # TODO:weight_mode代表在何时使用Norm
-    # TODO:Adjust_Low_Reward_Local、Adjust_Low_Reward_Global代表在何处使用RRB
-    # TODO:alpfa和beta控制global和local的奖励比率
     def _compute_difficult_adaption_advantage_difficulty(
         self,
-        data: DataProto,                  # 输入数据对象，包含批次数据和元数据 | Input data object containing batch data and metadata
-        adv_estimator: AdvantageEstimator, # 优势估计器类型（GAE/GRPO/RLOO等） | Type of advantage estimator
-        gamma: float = 1.0,               # 折扣因子（默认1.0） | Discount factor (default 1.0)
-        lam: float = 1.0,                  # GAE的lambda参数（默认1.0） | Lambda parameter for GAE (default 1.0)
+        data: DataProto,                  # Input data object containing batch data and metadata
+        adv_estimator: AdvantageEstimator, # Type of advantage estimator (GAE/GRPO/RLOO etc.)
+        gamma: float = 1.0,               # Discount factor (default 1.0)
+        lam: float = 1.0,                 # Lambda parameter for GAE (default 1.0)
         weight_mode: str = "weight_before_norm",
         Adjust_Low_Reward_Local: bool = False,
         Adjust_Low_Reward_Global: bool = False, 
-        alpfa: float = 1.0,
+        alpha: float = 1.0,
         beta: float = 1.0
     ):
-        token_level_rewards = data.batch["token_level_rewards"]  # 每个token的奖励 | Per-token rewards
-        response_mask = data.batch["response_mask"]              # 响应掩码（1=有效token）| Response mask (1=valid token)
-        index = data.non_tensor_batch["uid"]                     # 样本唯一标识符 | Sample unique identifiers
+        token_level_rewards = data.batch["token_level_rewards"]  # Per-token rewards
+        response_mask = data.batch["response_mask"]              # Response mask (1=valid token)
+        index = data.non_tensor_batch["uid"]                     # Sample unique identifiers
         global_index = data.non_tensor_batch["global_uid"]
-        difficult = data.non_tensor_batch["difficulty"]           # 提取difficult值
+        difficult = data.non_tensor_batch["difficulty"]          # Extract difficulty values
         category = data.non_tensor_batch["category"]
         id = data.non_tensor_batch["id"]
         old_log_probs = data.batch["old_log_probs"]
@@ -976,76 +696,75 @@ class RayPPOTrainer:
         weight_mode = weight_mode.split('_')
         
         if "WBN" in weight_mode or "WAN" in weight_mode:
-            # 计算每个global_id组的difficult均值
+            # Compute mean difficulty for each global_id group
             global_difficult_means = defaultdict(list)
             for gid, diff in zip(global_index, difficult):
                 global_difficult_means[gid].append(diff)
-            # 计算每组的均值
+            # Compute mean for each group
             global_difficult_means = {gid: sum(diff_list) / len(diff_list) 
-                                    for gid, diff_list in global_difficult_means.items()}
-            # 计算每个uid的difficult与组均值的差值
+                                      for gid, diff_list in global_difficult_means.items()}
+            # Compute difference between each uid's difficulty and the group mean
             difficult_diffs = [diff - global_difficult_means[gid] 
-                            for gid, diff in zip(global_index, difficult)]
+                               for gid, diff in zip(global_index, difficult)]
         elif "ABSWBN" in weight_mode or "ABSWAN" in weight_mode:
-            # 计算所有样本的difficult整体均值
+            # Compute overall mean difficulty for all samples
             global_overall_mean = sum(difficult) / len(difficult)
-            # 计算每个样本与整体均值的差值（保持zip结构，但实际不需要gid）
+            # Compute difference from overall mean
             difficult_diffs = [diff - global_overall_mean for gid, diff in zip(global_index, difficult)]
 
         if adv_estimator == AdvantageEstimator.GRPO:
             
             def to_numpy(x):
                 return x.cpu().numpy() if hasattr(x, 'cpu') else np.array(x)
-            # 计算每个句子的reward
+            
+            # Compute reward for each sentence
             token_rewards = to_numpy(token_level_rewards)
             scores = token_rewards.sum(axis=-1)
             difficult_map = {}
             
-            # 获取每个样本的难度
+            # Get difficulty for each sample
             for sample_id, diff, cat in zip(id, difficult, category):
                 if cat != "origin_problem":
                     continue
                 if sample_id not in difficult_map:
                     difficult_map[sample_id] = diff
                 elif difficult_map[sample_id] != diff:
-                    raise ValueError(f"冲突: id={sample_id} 对应多个 difficulty: "
-                                    f"{difficult_map[sample_id]} vs {diff}")
+                    raise ValueError(f"Conflict: id={sample_id} corresponds to multiple difficulties: "
+                                     f"{difficult_map[sample_id]} vs {diff}")
 
             score_ranges = self.config.trainer.score_ranges
             difficulty_changes = self.config.trainer.difficulty_changes
             min_diff = self.config.trainer.min_diff
             max_diff = self.config.trainer.max_diff
             weighted_advantage_k = self.config.trainer.weighted_advantage_k
-            # 按 sample_id 收集 scores
+            
+            # Collect scores by sample_id
             id_to_allscores = {}
             for cat, sample_id, score in zip(category, id, scores):
                 id_to_allscores.setdefault(sample_id, []).append(score)
 
-            # 收集所有需要更新的样本及其新难度值
+            # Collect all samples needing updates and their new difficulties
             updates = set()
             updates_log = set()
             for sample_id, scores in id_to_allscores.items():
-                avg_score = sum(scores) / len(scores)  # 计算平均分
-                old_diff = difficult_map[sample_id]  # 获取旧难度值
-                # 调用抽象函数来计算新的难度值
+                avg_score = sum(scores) / len(scores)  # Calculate average score
+                old_diff = difficult_map[sample_id]    # Get old difficulty
+                # Calculate new difficulty
                 new_diff = calculate_new_difficulty(avg_score, old_diff, score_ranges, difficulty_changes, min_diff, max_diff)
-                # 记录更新信息
+                # Log update info
                 updates_log.add((sample_id, new_diff, old_diff, avg_score))
                 updates.add((sample_id, new_diff))
+            
             updates = list(set(updates))
             updates_log = list(set(updates_log))
-            # 批量更新 dataset 中的 difficulty
+            # Batch update difficulty in dataset
             self.train_dataloader.dataset.update_difficulty(updates)
 
             stats = calculate_difficulty_changes(updates_log)
-            # 保存统计结果
-            all_log_path = self.config.trainer.All_Log_Path  ## path
-            log_path = os.path.join(all_log_path,'statistics.log')
-            append_to_json_log(log_path, stats)  ## path
-            # # 标准化
-            # normalized_advantages = normalize_advantages(advantages)
-            # # 最小最大归一化
-            # minmax_normalized_advantages = minmax_normalize_advantages(advantages)
+            # Save statistics
+            all_log_path = self.config.trainer.All_Log_Path
+            log_path = os.path.join(all_log_path, 'statistics.log')
+            append_to_json_log(log_path, stats)
             
             save_origin_global_advantages = []
             save_origin_local_advantages = []
@@ -1055,6 +774,7 @@ class RayPPOTrainer:
             save_WAN_global_advantages = []
             save_RRB_global_advantages = []
             save_RRB_local_advantages = []
+            
             if "KLCOV" in weight_mode:
                 ref_log_probs = data.batch["ref_log_probs"]
                 local_advantages, local_returns = compute_grpo_outcome_advantage_kl_cov(
@@ -1070,6 +790,7 @@ class RayPPOTrainer:
                 global_advantages, global_returns = compute_grpo_outcome_advantage(
                     token_level_rewards, response_mask, global_index
                 )
+            
             save_global_advantages = global_advantages
             save_local_advantages = local_advantages
             save_origin_global_advantages = global_advantages
@@ -1121,16 +842,14 @@ class RayPPOTrainer:
                 )
                 save_RRB_global_advantages = global_advantages
 
-            advantages = alpfa * local_advantages + beta * global_advantages
-            returns = alpfa * local_advantages + beta * global_advantages
-            # advantages = global_advantages
-            # returns = global_advantages
+            advantages = alpha * local_advantages + beta * global_advantages
+            returns = alpha * local_advantages + beta * global_advantages
+
             vector_data = {
-                "local_advantages": local_advantages.cpu().numpy()[:, 0],  # 转为numpy并只取第一列
+                "local_advantages": local_advantages.cpu().numpy()[:, 0],  # Convert to numpy and take first column
                 "global_advantages": global_advantages.cpu().numpy()[:, 0],
-                # "adj_global_advantages": adj_global_advantages.cpu().numpy()[:, 0],
-                "advantages": advantages.cpu().numpy()[:, 0],  # 取第一列
-                "token_rewards": token_level_rewards.cpu().numpy().sum(axis=-1),  # 计算token rewards总和
+                "advantages": advantages.cpu().numpy()[:, 0],  # Take first column
+                "token_rewards": token_level_rewards.cpu().numpy().sum(axis=-1),  # Sum of token rewards
                 "save_origin_global_advantages": save_origin_global_advantages,
                 "save_origin_local_advantages": save_origin_local_advantages,
                 "save_WBN_global_advantages": save_WBN_global_advantages,
@@ -1141,14 +860,14 @@ class RayPPOTrainer:
                 "save_RRB_local_advantages": save_RRB_local_advantages
             }
 
-            # 调用保存函数
-            all_log_path = self.config.trainer.All_Log_Path  ## path
-            log_path = os.path.join(all_log_path,'full_vector.log')
-            save_full_vectors_to_json(data, vector_data, log_path) ## path
+            # Call save function
+            all_log_path = self.config.trainer.All_Log_Path
+            log_path = os.path.join(all_log_path, 'full_vector.log')
+            save_full_vectors_to_json(data, vector_data, log_path)
         
-        # 将计算结果存入原始数据对象 | Store results in original data object
-        data.batch["advantages"] = advantages  # 优势函数值 | Advantage values
-        data.batch["returns"] = returns        # 回报值 | Return values
+        # Store results in original data object
+        data.batch["advantages"] = advantages  # Advantage values
+        data.batch["returns"] = returns        # Return values
         return data
 
     def fit(self):
@@ -1233,35 +952,36 @@ class RayPPOTrainer:
                     else:
                         batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
 
-                    #TODO: 1.如果开启DIVA_GRPO, 则使用动态变化的难度
-                    #TODO: 2.如果开启Share_VL，则使用Global+local
-                    #TODO: 3.如果都关闭则使用原始的优势计算
+                    # TODO: 1. If DIVA_GRPO is enabled, use dynamic difficulty adaptation.
+                    # TODO: 2. If Share_VL is enabled, use Global+local.
+                    # TODO: 3. If both are disabled, use original advantage computation.
                     # compute advantages, executed on the driver process
                     if self.config.trainer.DIVA_GRPO and (self.config.trainer.DIVA_warmup != True or self.global_step > 30):
-                        print("使用DIVA_GRPO优势估计方法")
+                        print("Using DIVA_GRPO advantage estimation method")
                         batch = self._compute_difficult_adaption_advantage_difficulty(
                             batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,  # 优势估计方法（如GAE）
-                            gamma=self.config.algorithm.gamma,  # 折扣因子
-                            lam=self.config.algorithm.lam,  # GAE参数
+                            adv_estimator=self.config.algorithm.adv_estimator,  # Advantage estimation method (e.g., GAE)
+                            gamma=self.config.algorithm.gamma,  # Discount factor
+                            lam=self.config.algorithm.lam,  # GAE parameter
                             weight_mode=self.config.algorithm.weight_mode,
                         )
                     elif self.config.trainer.Share_VL:
-                        print("使用Share_VL优势估计方法")
+                        print("Using Share_VL advantage estimation method")
+                        # Note: assuming _compute_difficult_adaption_advantage exists or meant to use the other function
                         batch = self._compute_difficult_adaption_advantage(
                             batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,  # 优势估计方法（如GAE）
-                            gamma=self.config.algorithm.gamma,  # 折扣因子
-                            lam=self.config.algorithm.lam,  # GAE参数
+                            adv_estimator=self.config.algorithm.adv_estimator,
+                            gamma=self.config.algorithm.gamma,
+                            lam=self.config.algorithm.lam,
                         )
                     else:
-                        print("使用普通优势估计方法")
+                        print("Using standard advantage estimation method")
                         batch = compute_advantage(
                             batch,
                             adv_estimator=self.config.algorithm.adv_estimator,
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
-                            all_log_path = self.config.trainer.All_Log_Path  ## path
+                            all_log_path=self.config.trainer.All_Log_Path
                         )
 
                 # update critic
