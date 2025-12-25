@@ -6,12 +6,13 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import fcntl
 import json
+import datetime  # Added missing import
 
 def calculate_difficulty_changes(updates_log):
     """
-    统计difficulty变化，并计算平均分。
-    :param updates_log: 包含更新日志的列表，格式为 (uid, new_diff, old_diff, avg_score)
-    :return: 包含统计信息的字典
+    Track difficulty changes and calculate the average score.
+    :param updates_log: List containing update logs in the format (uid, new_diff, old_diff, avg_score)
+    :return: Dictionary containing statistical information
     """
     stats = {
         'new_diff': {},
@@ -23,53 +24,21 @@ def calculate_difficulty_changes(updates_log):
     total_score = 0.0
 
     for uid, new_diff, old_diff, avg_score in updates_log:
-        # 记录 new_diff 和 old_diff 的变化
+        # Record changes in new_diff and old_diff
         if new_diff != 0:
             stats['new_diff'][new_diff] = stats['new_diff'].get(new_diff, 0) + 1
         if old_diff != 0:
             stats['old_diff'][old_diff] = stats['old_diff'].get(old_diff, 0) + 1
 
-        # 累加avg_score用于计算平均值
+        # Accumulate avg_score for average calculation
         total_score += avg_score
         total_entries += 1
 
-    # 计算平均分
+    # Calculate average score
     if total_entries > 0:
         stats['avg_avg_score'] = float(total_score / total_entries)
 
     return stats
-
-def normalize_advantages(advantages):
-    """
-    归一化优势值（标准化）。
-    :param advantages: PyTorch 张量
-    :return: 归一化后的张量
-    """
-    mean = advantages.mean()
-    std = advantages.std()
-
-    # 避免除以0
-    std = std if std > 0 else 1.0
-
-    # 归一化
-    normalized = (advantages - mean) / std
-    return normalized
-
-def minmax_normalize_advantages(advantages):
-    """
-    使用最大最小缩放对优势值进行归一化。
-    :param advantages: PyTorch 张量
-    :return: 归一化后的张量
-    """
-    max_abs = torch.max(torch.abs(advantages))
-
-    # 如果所有优势值都是0，直接返回原数组（避免除以0）
-    if max_abs == 0:
-        return advantages
-
-    # 缩放到 [-1, 1] 区间
-    normalized = advantages / max_abs
-    return normalized
 
 def calculate_new_difficulty(avg_score, old_diff, score_ranges, difficulty_changes, min_diff, max_diff):
     for (min_score, max_score), difficulty_change in zip(score_ranges, difficulty_changes):
@@ -77,22 +46,22 @@ def calculate_new_difficulty(avg_score, old_diff, score_ranges, difficulty_chang
             new_diff = old_diff + difficulty_change
             break
     else:
-        new_diff = old_diff  # 如果没有匹配的区间，保持原难度值
+        new_diff = old_diff  # Keep original difficulty if no interval matches
 
-    # 限制难度值在 min_diff 和 max_diff 之间
+    # Limit difficulty value between min_diff and max_diff
     return max(min_diff, min(new_diff, max_diff))
 
 def multiplier(difficult, advantage, weighted_advantage_k):
-    # 使用逐元素操作替代标量判断
-    k = weighted_advantage_k  # 可调整的敏感度参数 （）
+    # Use element-wise operations instead of scalar judgment
+    k = weighted_advantage_k  # Adjustable sensitivity parameter
     
-    # 创建与advantage相同形状的初始乘数
+    # Create initial multiplier with the same shape as advantage
     multiplier = torch.ones_like(advantage)
     
-    # 找到非零元素的索引
+    # Find indices of non-zero elements
     nonzero_mask = (advantage != 0)
     
-    # 对非零元素计算乘数
+    # Calculate multiplier for non-zero elements
     sign = torch.where(advantage > 0, 1.0, -1.0)
     multiplier[nonzero_mask] = torch.exp(k * difficult * sign[nonzero_mask])
     
@@ -102,7 +71,7 @@ def weighted_advantage(difficult, advantage, weighted_advantage_k):
     return advantage * multiplier(difficult, advantage, weighted_advantage_k)
 
 def log_difficulty_update(id_, old_diff, new_diff, math_reward, path):
-    """记录difficult更新日志"""
+    """Log difficulty update."""
     log_entry = {
         "id": id_,
         "old_difficulty": old_diff,
@@ -117,45 +86,55 @@ def log_difficulty_update(id_, old_diff, new_diff, math_reward, path):
         print(f"Error logging difficulty update: {e}")
 
 def append_to_json_log(filename, data):
-    """改进的JSON日志追加方法，使用JSONL格式（每行一个JSON对象）"""
+    """Improved JSON log appending method using JSONL format (one JSON object per line)."""
     try:
         with open(filename, "a+") as f:
-            # 获取文件锁
+            # Acquire file lock
             fcntl.flock(f, fcntl.LOCK_EX)
-            # 移动到文件末尾
+            # Move to end of file
             f.seek(0, 2)
-            # 写入数据（JSONL格式不需要逗号或方括号）
+            # Write data (JSONL format does not need commas or brackets)
             json.dump(data, f)
             f.write("\n")
-            # 在文件关闭前释放锁
+            # Release lock before closing the file
             fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
         print(f"Error writing to {filename}: {str(e)}")
 
 def normalize_advantages(advantages):
-    # 计算均值和标准差
+    """
+    Normalize advantages (Standardization).
+    :param advantages: PyTorch Tensor
+    :return: Normalized Tensor
+    """
+    # Calculate mean and standard deviation
     mean = advantages.mean()
     std = advantages.std()
-    # 避免除以0
+    # Avoid division by zero
     std = std if std > 0 else 1.0
-    # 归一化
+    # Normalize
     normalized = (advantages - mean) / std
     return normalized
 
 def minmax_normalize_advantages(advantages):
-    # 使用 PyTorch 的方法
+    """
+    Normalize advantages using Min-Max scaling.
+    :param advantages: PyTorch Tensor
+    :return: Normalized Tensor
+    """
+    # Use PyTorch method
     max_abs = torch.max(torch.abs(advantages))
-    # 如果所有优势值都是0，直接返回原数组（避免除以0）
+    # If all advantages are 0, return the original array (avoid division by zero)
     if max_abs == 0:
         return advantages
-    # 缩放到 [-1, 1] 区间
+    # Scale to [-1, 1] interval
     normalized = advantages / max_abs
     return normalized
 
 def rms_normalize_advantages(advantages, epsilon=1e-6):
-    # 计算每个样本的均方根
+    # Calculate Root Mean Square (RMS) for each sample
     rms = torch.sqrt(torch.mean(torch.square(advantages), dim=-1, keepdim=True) + epsilon)
-    # 归一化
+    # Normalize
     normalized = advantages / rms
     return normalized
 
@@ -167,35 +146,35 @@ def adjust_low_reward_advantages(
     scale_factor: float = 0.1
 ) -> torch.Tensor:
     """
-    调整低奖励global_id对应的advantages
+    Adjust advantages for global_ids with low rewards.
     
-    参数:
-        global_advantages: 原始计算的global advantages张量
-        global_index: global_id列表，与global_advantages一一对应
-        token_level_rewards: 每个token的奖励张量
-        threshold: 判断为低奖励的阈值(默认0.15)
-        scale_factor: 低奖励advantages的缩放因子(默认0.1)
+    Args:
+        global_advantages: Original calculated global advantages tensor
+        global_index: List of global_ids corresponding to global_advantages
+        token_level_rewards: Reward tensor for each token
+        threshold: Threshold to determine low reward (default 0.15)
+        scale_factor: Scaling factor for low reward advantages (default 0.1)
     
-    返回:
-        调整后的global_advantages张量
+    Returns:
+        Adjusted global_advantages tensor
     """
-    # 创建字典记录每个global_id的总奖励
+    # Create dictionary to record total rewards for each global_id
     global_id_to_rewards = {}
     for gid, rewards in zip(global_index, token_level_rewards):
         if gid not in global_id_to_rewards:
             global_id_to_rewards[gid] = []
         global_id_to_rewards[gid].append(rewards.sum().item())
     
-    # 找出所有总奖励都低于threshold的global_id
+    # Find all global_ids where all rewards are below the threshold
     low_reward_global_ids = {
         gid for gid, rewards in global_id_to_rewards.items()
         if all(r < threshold for r in rewards)
     }
     
-    # 复制原始advantages以避免原地修改
+    # Clone original advantages to avoid in-place modification
     adjusted_advantages = global_advantages.clone()
     
-    # 调整低奖励global_id对应的advantages
+    # Adjust advantages for low reward global_ids
     for i, gid in enumerate(global_index):
         if gid in low_reward_global_ids:
             adjusted_advantages[i] = adjusted_advantages[i] * scale_factor
@@ -204,11 +183,11 @@ def adjust_low_reward_advantages(
 
 def save_full_vectors_to_json(data, vector_data, output_path):
     """
-    保存完整向量到JSON文件（包括所有相关的向量和原始数据）
+    Save full vectors to a JSON file (including all related vectors and raw data).
     
-    参数:
-        data: DataProto 包含样本数据
-        vector_data: 包含所有需要保存的向量数据及原始数据的字典
+    Args:
+        data: DataProto containing sample data
+        vector_data: Dictionary containing all vector data and raw data to be saved
     """
     existing_lines = []
     
@@ -216,7 +195,7 @@ def save_full_vectors_to_json(data, vector_data, output_path):
         with open(output_path, "r", encoding="utf-8") as f:
             existing_lines = [line.strip() for line in f if line.strip()]
 
-    # 准备数据（保存处理后的向量）
+    # Prepare data (save processed vectors)
     jsonl_data = [
         json.dumps({
             "id": str(data.non_tensor_batch["id"][i]),
@@ -226,7 +205,7 @@ def save_full_vectors_to_json(data, vector_data, output_path):
             "index": i,
             "category": data.non_tensor_batch["category"][i],
             "difficulty": data.non_tensor_batch["difficulty"][i],
-            # 判断 `save_origin_global_advantages` 是否为空，并做相应处理
+            # Check if `save_origin_global_advantages` is empty and handle accordingly
             "local_advantages": 
                 None if len(vector_data["local_advantages"]) == 0 else (
                     vector_data["local_advantages"][i].tolist()
@@ -314,23 +293,21 @@ def save_full_vectors_to_json(data, vector_data, output_path):
         for i in range(len(data.non_tensor_batch["id"]))
     ]
 
-
-
-    # 合并数据并写入文件（追加模式）
+    # Merge data and write to file (append mode)
     with open(output_path, "a", encoding="utf-8") as f:
         for line in jsonl_data:
             f.write(line + "\n")
 
-    print(f"已保存完整向量数据，新增样本数：{len(jsonl_data)}，总样本数：{len(existing_lines) + len(jsonl_data)}")
+    print(f"Full vector data saved. New samples: {len(jsonl_data)}, Total samples: {len(existing_lines) + len(jsonl_data)}")
 
 
 def save_full_vectors_to_json_origin_grpo(data, vector_data, output_path):
     """
-    保存完整向量到JSON文件（包括所有相关的向量和原始数据）
+    Save full vectors to a JSON file (including all related vectors and raw data).
     
-    参数:
-        data: DataProto 包含样本数据
-        vector_data: 包含所有需要保存的向量数据及原始数据的字典
+    Args:
+        data: DataProto containing sample data
+        vector_data: Dictionary containing all vector data and raw data to be saved
     """
     existing_lines = []
     
@@ -338,7 +315,7 @@ def save_full_vectors_to_json_origin_grpo(data, vector_data, output_path):
         with open(output_path, "r", encoding="utf-8") as f:
             existing_lines = [line.strip() for line in f if line.strip()]
 
-    # 准备数据（保存处理后的向量）
+    # Prepare data (save processed vectors)
     jsonl_data = [
         json.dumps({
             "id": str(data.non_tensor_batch["id"][i]),
@@ -346,7 +323,7 @@ def save_full_vectors_to_json_origin_grpo(data, vector_data, output_path):
             "problem": str(data.non_tensor_batch["problem"][i]),
             "index": i,
             "category": data.non_tensor_batch["category"][i],
-            # 判断 `save_origin_global_advantages` 是否为空，并做相应处理
+            # Check if `save_origin_global_advantages` is empty and handle accordingly
             "advantages": 
                 None if len(vector_data["advantages"]) == 0 else (
                     vector_data["advantages"][i].tolist()
@@ -364,11 +341,9 @@ def save_full_vectors_to_json_origin_grpo(data, vector_data, output_path):
         for i in range(len(data.non_tensor_batch["id"]))
     ]
 
-
-
-    # 合并数据并写入文件（追加模式）
+    # Merge data and write to file (append mode)
     with open(output_path, "a", encoding="utf-8") as f:
         for line in jsonl_data:
             f.write(line + "\n")
 
-    print(f"已保存完整向量数据，新增样本数：{len(jsonl_data)}，总样本数：{len(existing_lines) + len(jsonl_data)}")
+    print(f"Full vector data saved. New samples: {len(jsonl_data)}, Total samples: {len(existing_lines) + len(jsonl_data)}")

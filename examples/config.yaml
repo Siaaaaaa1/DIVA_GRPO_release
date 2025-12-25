@@ -8,7 +8,7 @@ data:
   image_dir: null
   video_fps: 2.0
   max_prompt_length: 2048
-  max_response_length: 2048
+  max_response_length: 4096
   rollout_batch_size: 512  # equivalent to verl's data.train_batch_size
   mini_rollout_batch_size: null  # equivalent to verl's data.gen_batch_size
   val_batch_size: 1024
@@ -30,6 +30,7 @@ algorithm:
   filter_key: overall
   filter_low: 0.01
   filter_high: 0.99
+  weight_mode: None
 
 worker:
   actor:
@@ -84,6 +85,7 @@ worker:
   reward:
     reward_type: batch
     reward_function: ./examples/reward_function/math.py:compute_score
+    reward_save_path: ./logs
 
 trainer:
   total_epochs: 15
@@ -104,3 +106,28 @@ trainer:
   save_checkpoint_path: null
   load_checkpoint_path: null
   find_last_checkpoint: true
+  DIVA_GRPO: false
+  Share_VL: false
+  Variant_Num: 1
+  Dataset_Mode: None
+  Save_Data: true
+  weighted_advantage_k: 0.1
+  score_ranges:  # 按照score_ranges和difficulty_changes计算
+    - [0.0, 0.05]
+    - [0.05, 0.3]
+    - [0.3, 0.5]
+    - [0.5, 0.7]
+    - [0.7, 1.0]
+  difficulty_changes:
+    - 2
+    - 1
+    - 0
+    - -1
+    - -2
+  min_diff: 1
+  max_diff: 9
+  All_Log_Path: /mmu_cd_ssd/zhangzhenyu06/workspace/Rebuttal/all_log_path
+  DIVA_warmup: false
+
+
+

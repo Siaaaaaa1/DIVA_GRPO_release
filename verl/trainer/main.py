@@ -76,7 +76,6 @@ class Runner:
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
         val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
 
-        # TODO: 增加DIVA_GRPO创建数据集
         if config.trainer.DIVA_GRPO == True:
             train_dataloader, val_dataloader = create_dataloader(config.data, tokenizer, processor, config.trainer)
         else:
