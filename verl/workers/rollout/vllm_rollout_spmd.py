@@ -55,7 +55,6 @@ def _process_multi_modal_data(
     # may convert image path to image object
     images, videos = [], []
     if "images" in multi_modal_data:
-        # TODO: 添加了Image处理逻辑
         if isinstance(multi_modal_data["images"],dict):
             images.append(process_image(multi_modal_data["images"], min_pixels, max_pixels))
         else:
@@ -174,7 +173,6 @@ class vLLMRollout(BaseRollout):
         if batch_size != len(batch_raw_prompt_ids):
             raise RuntimeError("vllm sharding manager is not work properly.")
         
-        # ==================== 准备vLLM引擎输入 ====================
         if batch_multi_modal_data is not None:
             vllm_inputs = []
             for raw_prompt_ids, multi_modal_data in zip(batch_raw_prompt_ids, batch_multi_modal_data):
@@ -192,7 +190,6 @@ class vLLMRollout(BaseRollout):
         else:
             vllm_inputs = [{"prompt_token_ids": list(raw_prompt_ids)} for raw_prompt_ids in batch_raw_prompt_ids]
 
-        # ==================== 序列生成 ====================
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**prompts.meta_info):
             completions: list[RequestOutput] = self.inference_engine.generate(

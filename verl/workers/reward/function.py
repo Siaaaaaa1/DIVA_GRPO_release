@@ -111,10 +111,10 @@ class BatchFunctionRewardManager(FunctionRewardManager):
 
     def compute_reward(self, data: DataProto) -> Tuple[Tensor, dict[str, list[float]]]:
         reward_inputs = []
+        output_reward_input = []
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
         
-        # 构建 reward_inputs 列表
         for i in range(len(data)):
             cur_response_length = int(response_length[i].item())
             valid_response_ids = response_ids[i][:cur_response_length]
@@ -137,19 +137,14 @@ class BatchFunctionRewardManager(FunctionRewardManager):
                 }
             )
         
-        # 计算奖励分数
         scores = self.reward_fn(reward_inputs)
         
-        # 将 reward_inputs 和对应的 scores 合并后写入文件
         if self.config.reward_save_path:
-            # 确保目录存在
             os.makedirs(self.config.reward_save_path, exist_ok=True)
             save_file = os.path.join(self.config.reward_save_path, "response.log")
             
-            # 以追加模式写入文件（每行一个JSON对象）
             with open(save_file, "a", encoding="utf-8") as f:
                 for i, item in enumerate(output_reward_input):
-                    # 合并 reward_input 和对应的 score
                     combined_record = {**item, **scores[i]}
                     f.write(json.dumps(combined_record, ensure_ascii=False) + "\n")
         

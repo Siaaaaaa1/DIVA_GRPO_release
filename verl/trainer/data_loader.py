@@ -23,7 +23,6 @@ import math
 
 
 def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, processor: Optional[ProcessorMixin], train_config: Optional[TrainerConfig] = None) -> None:
-    #TODO: 当传入train_config时，创建带有变体的dataset
     if train_config is None:
         train_dataset = RLHFDataset(
             data_path=config.train_files,
@@ -67,7 +66,6 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
         )
 
     # use sampler for better ckpt resume
-    # TODO: 这部分代码看一下有没有问题？    
     if config.shuffle:
         train_dataloader_generator = torch.Generator()
         train_dataloader_generator.manual_seed(config.seed)
@@ -85,10 +83,10 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
             dataset=train_dataset,
             batch_size=math.ceil(train_batch_size/(train_config.Variant_Num+1)),  # 必须与 num_calls_per_batch 一致
             sampler=sampler,
-            collate_fn=collate_fn_DA,  # 需支持处理 List[List[Dict]]
+            collate_fn=collate_fn_DA,
             num_workers=8,
             pin_memory=False,
-            drop_last=True  # 由 collate_fn 控制样本数
+            drop_last=True
         )
     else:
         train_dataloader = StatefulDataLoader(
