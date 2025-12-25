@@ -43,17 +43,7 @@ Format (example with 4 steps):
 \boxed{[final answer]}
 '''
 
-PROMPT_THINK_STEP_REFINE = r'''You are a mathematician. You have already provided the reasoning steps above.
-Do you think your answer is correct? Please revise or improve your reasoning steps based on the correct answer provided below.
-Emphasize!
-- DO NOT include the correct answer in <step>.
-- DO NOT reverse-engineer from the answer.
-After refining, regenerate a step-by-step reasoning process that logically leads to the correct result in the \boxed{}.
-Format:
-<step1> ... </step1>
-...
-\boxed{[final answer]}
-'''
+# 移除了 PROMPT_THINK_STEP_REFINE，因为不再需要二次纠正
 
 # ================= Parsers =================
 
@@ -164,9 +154,9 @@ class AzureQwenClient(BaseLLMClient):
         return parse_variants(response)
 
     def generate_think_steps(self, problem_text: str, correct_answer: str, image_bytes: bytes = None) -> Dict[str, Any]:
-        """生成 Think Steps (Initial + Refine)"""
+        """生成 Think Steps (Extraction + Verification)"""
         
-        # 1. 构造初始请求
+        # 1. 构造请求
         content = [{"type": "text", "text": PROMPT_THINK_STEP_INIT}]
         
         if image_bytes:
@@ -180,33 +170,28 @@ class AzureQwenClient(BaseLLMClient):
             {"role": "user", "content": content}
         ]
         
-        # 第一次生成
-        first_response = self.generate_content(messages)
-        first_steps = parse_think_steps(first_response)
-        first_ans = parse_boxed_answer(first_response)
+        # 2. 生成并解析
+        response = self.generate_content(messages)
+        steps = parse_think_steps(response)
+        generated_ans = parse_boxed_answer(response)
         
-        if not first_steps:
-            return {"status": "failed", "reason": "No steps in first response"}
+        if not steps:
+            return {"status": "failed", "reason": "No steps parsed"}
+        
+        if not generated_ans:
+             return {"status": "failed", "reason": "No boxed answer parsed"}
 
-        # 2. 构造 Refine 请求 (Multi-turn conversation)
-        messages.append({"role": "assistant", "content": first_response})
-        messages.append({
-            "role": "user", 
-            "content": f"The correct answer to this question is: {correct_answer}\n{PROMPT_THINK_STEP_REFINE}"
-        })
-
-        # 第二次生成
-        second_response = self.generate_content(messages)
-        second_steps = parse_think_steps(second_response)
-        second_ans = parse_boxed_answer(second_response)
-
-        if not second_steps:
-            return {"status": "failed", "reason": "No steps in second response"}
-
-        return {
-            "status": "success",
-            "initial_steps": first_steps,
-            "initial_answer": first_ans,
-            "refined_steps": second_steps,  # 这是最终想要的高质量 CoT
-            "refined_answer": second_ans
-        }
+        # 3. 对比答案 (Check consistency)
+        # 这里进行简单的字符串对比 (去除首尾空格)
+        # 如果需要更复杂的数学等价性判断 (如 1/2 vs 0.5)，需要引入额外的库
+        if str(generated_ans).strip() == str(correct_answer).strip():
+            return {
+                "status": "success",
+                "think_steps": steps,
+                "think_answer": generated_ans
+            }
+        else:
+            return {
+                "status": "failed", 
+                "reason": f"Answer mismatch. Generated: '{generated_ans}' vs Dataset: '{correct_answer}'"
+            }
