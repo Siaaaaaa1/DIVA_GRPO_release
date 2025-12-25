@@ -112,7 +112,7 @@ trainer:
   Dataset_Mode: None
   Save_Data: true
   weighted_advantage_k: 0.1
-  score_ranges:  # 按照score_ranges和difficulty_changes计算
+  score_ranges:
     - [0.0, 0.05]
     - [0.05, 0.3]
     - [0.3, 0.5]
@@ -126,7 +126,7 @@ trainer:
     - -2
   min_diff: 1
   max_diff: 9
-  All_Log_Path: /mmu_cd_ssd/zhangzhenyu06/workspace/Rebuttal/all_log_path
+  All_Log_Path: ./all_log_path
   DIVA_warmup: false
 
 
