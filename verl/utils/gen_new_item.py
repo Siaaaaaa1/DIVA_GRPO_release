@@ -1,8 +1,18 @@
-import random
 import copy
-from typing import Dict, List, Callable, Any, Optional
+import logging
+import math
+import os
+import random
+from datetime import datetime
 from functools import partial
+from io import BytesIO
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
+
 import numpy as np
+from PIL import Image as ImageModule
+from PIL.Image import Image as ImageObject
+
 
 from ..difficulty_variation.difficulty_utils import (
     rotate_image,
@@ -403,23 +413,6 @@ DIFFICULTY_FUNCTION_MAP = {
     8: [partial(apply_random_transformations, 2, 0.30, 4),partial(apply_random_transformations, 2, 0.50, 8),partial(gen_only_vision,0.50, 2)],
 }
 
-import os
-import copy
-import random
-from datetime import datetime
-from typing import Dict, Any, List
-from PIL import Image as ImageModule
-
-import math
-import logging
-import os
-from pathlib import Path
-from typing import Union, Any, Optional
-from datetime import datetime
-from io import BytesIO
-from PIL import Image as ImageModule
-from PIL.Image import Image as ImageObject
-
 def generate_variants(
     origin_item: Dict[str, Any],
     variant_num: int,
@@ -433,44 +426,14 @@ def generate_variants(
         variant_num: Number of variants
         allow_multiple_thinking: Whether to allow multiple thinking step variants
     """
-    # Create debug log file path
-    debug_dir = "/mmu_cd_ssd/zhangzhenyu06/workspace/Rebuttal/Help"
-    os.makedirs(debug_dir, exist_ok=True)
-    debug_file = os.path.join(debug_dir, f"generate_variants_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-    
-    def log_debug(message: str, data: Any = None):
-        """Helper function: write to debug log"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        with open(debug_file, 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] {message}\n")
-            if data is not None:
-                f.write(f"  Data: {str(data)[:500]}\n")  # Limit length to avoid excessive log size
-            f.write("-" * 50 + "\n")
-    
-    # Record function entry parameters
-    log_debug("Function generate_variants called", {
-        "origin_item_keys": list(origin_item.keys()) if origin_item else None,
-        "variant_num": variant_num,
-        "allow_multiple_thinking": allow_multiple_thinking,
-        "origin_difficulty": origin_item.get('difficulty') if origin_item else None
-    })
-    
     # Generate difficulty samples
     difficulty_samples = generate_variant_difficulty_samples(
         origin_item['difficulty'],
         variant_num
     )
-
-    log_debug("Difficulty samples generation complete", {
-        "difficulty_samples": difficulty_samples,
-        "origin_difficulty": origin_item['difficulty']
-    })
     
     # Calculate difficulty difference
     difficulty_deltas = [d - origin_item['difficulty'] for d in difficulty_samples]
-    log_debug("Difficulty delta calculation complete", {
-        "difficulty_deltas": difficulty_deltas
-    })
     
     # Handle thinking step variants (only one allowed)
     if not allow_multiple_thinking:
@@ -490,56 +453,21 @@ def generate_variants(
     
     # Generate variants
     variant_list = [origin_item]
-    log_debug("Start generating variants", {
-        "initial_variant_list_length": len(variant_list)
-    })
     
     for idx, delta in enumerate(difficulty_deltas):
-        log_debug(f"Processing variant {idx+1}/{len(difficulty_deltas)}", {
-            "delta": delta
-        })
-        
         new_item = copy.deepcopy(origin_item)
         
         # Get and execute processing function for corresponding difficulty
         func_list = DIFFICULTY_FUNCTION_MAP.get(delta, [])
-        log_debug(f"Function list for delta {delta}", {
-            "func_list_length": len(func_list),
-            "delta": delta,
-            "available_deltas": list(DIFFICULTY_FUNCTION_MAP.keys())
-        })
         
         if func_list:
             selected_func = random.choice(func_list)
-            log_debug(f"Select processing function", {
-                "delta": delta,
-                "selected_func": selected_func.__name__ if hasattr(selected_func, '__name__') else str(selected_func)
-            })
             
             try:
                 variant_question = selected_func(new_item)
-                
                 variant_list.append(variant_question)
-                log_debug(f"Variant {idx+1} generated successfully", {
-                    "variant_question_keys": list(variant_question.keys()) if variant_question else None
-                })
-
             except Exception as e:
-                log_debug(f"Variant {idx+1} generation failed", {
-                    "error": str(e),
-                    "delta": delta,
-                    "func": selected_func.__name__ if hasattr(selected_func, '__name__') else str(selected_func)
-                })
+                # Optionally log specific error or re-raise
                 raise
-        else:
-            log_debug(f"Warning: No processing function found for delta {delta}", {
-                "delta": delta,
-                "DIFFICULTY_FUNCTION_MAP_keys": list(DIFFICULTY_FUNCTION_MAP.keys())
-            })
-    
-    log_debug("Function execution complete", {
-        "final_variant_list_length": len(variant_list),
-        "generated_variants_count": len(variant_list) - 1
-    })
     
     return variant_list

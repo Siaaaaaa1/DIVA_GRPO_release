@@ -64,16 +64,8 @@ def collate_fn_DA(features: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
     Input features: List[List[Dict]], outer list length 128, inner list length 8.
     Output: Dict[str, Any], with tensors stacked and non-tensors as numpy arrays.
     """
-    # Debug info
-    print(f"Input features type: {type(features)}")
-    print(f"Input features length (__getitem__ calls): {len(features)}")
-    if features:
-        print(f"Samples in first __getitem__: {len(features[0])}")
-        print(f"First sample keys: {list(features[0][0].keys())}")
-
     # Flatten nested structure (128 * 8 = 1024 samples)
     flat_features = [item for sublist in features for item in sublist]
-    print(f"Total flattened samples: {len(flat_features)}")
 
     # Separate tensor and non-tensor fields
     tensors = defaultdict(list)
@@ -94,14 +86,12 @@ def collate_fn_DA(features: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         except RuntimeError:
             # Cat if shapes differ (e.g., variable length data like bounding boxes)
             tensors[key] = torch.cat(tensors[key], dim=0)
-            print(f"Warning: Field {key} used torch.cat instead of stack")
     
     # Merge non-tensor fields
     for key in non_tensors:
         try:
             non_tensors[key] = np.array(non_tensors[key], dtype=object)
         except Exception as e:
-            print(f"Cannot convert field {key} to numpy array: {str(e)}")
             non_tensors[key] = non_tensors[key]  # Keep as is
     
     return {**tensors, **non_tensors}
@@ -206,13 +196,11 @@ class RLHFDataset(Dataset):
                 self.format_prompt = f.read()
 
         if self.DIVA_GRPO == False or filter_overlong_prompts:
-            print(f"Before overlong prompts filter datasets length is === {len(self.dataset)}")
             self.dataset = self.dataset.filter(
                 self._filter_overlong_prompts,
                 desc="Filtering overlong prompts",
                 num_proc=filter_overlong_prompts_workers,
             )
-            print(f"After overlong prompts filter datasets length is === {len(self.dataset)}")
 
     def _build_messages(self, example: dict[str, Any]) -> list[dict[str, Any]]:
         prompt_str: str = example[self.prompt_key]
@@ -296,7 +284,6 @@ class RLHFDataset(Dataset):
         """
         # Convert updates to dict for fast lookup
         uid_to_diff = {str(uid): new_diff for uid, new_diff in updates}
-        print(f"\n[DEBUG] Starting difficulty update for {len(updates)} samples...")
 
         # Stats before update
         before_diff_dist = dict(zip(*np.unique(self.dataset['difficulty'], return_counts=True)))
@@ -319,23 +306,7 @@ class RLHFDataset(Dataset):
 
         # Output update results
         after_diff_dist = dict(zip(*np.unique(self.dataset['difficulty'], return_counts=True)))
-        print(f"\n[DEBUG] Update summary:")
-        print(f"  - Total updates attempted: {len(updates)}")
-        print(f"  - Successfully updated: {len(updates) - len(missing_ids)}")
-        print(f"  - Not found samples: {len(missing_ids)}")
-        if missing_ids:
-            print(f"    - Missing IDs: {', '.join(missing_ids[:5])}{'...' if len(missing_ids) > 5 else ''}")
-
-        # Random sample verification (optional)
-        if updates and not missing_ids:
-            print("\n[DEBUG] Random sample verification:")
-            import random
-            test_cases = random.sample(updates, min(5, len(updates)))
-            for uid, expected_diff in test_cases:
-                idx = self.dataset['id'].index(uid)
-                actual_diff = self.dataset[idx]['difficulty']
-                status = "✓" if actual_diff == expected_diff else "✗"
-                print(f"  - ID {uid}: expected {expected_diff}, got {actual_diff} [{status}]")
+       
         return not missing_ids
 
     def _build_variant_messages(self, example):

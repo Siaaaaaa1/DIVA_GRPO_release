@@ -81,7 +81,7 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
     if train_config is not None and train_config.DIVA_GRPO==True:
         train_dataloader = StatefulDataLoader(
             dataset=train_dataset,
-            batch_size=math.ceil(train_batch_size/(train_config.Variant_Num+1)),  # 必须与 num_calls_per_batch 一致
+            batch_size=math.ceil(train_batch_size/(train_config.Variant_Num+1)),
             sampler=sampler,
             collate_fn=collate_fn_DA,
             num_workers=8,
