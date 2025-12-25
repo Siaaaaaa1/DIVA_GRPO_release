@@ -77,7 +77,9 @@ safety_settings = [
 ]
 
 endpoint = '**'
-deployment = '**'subscription_key = '**'safety_settings = [
+deployment = '**'
+subscription_key = '**'
+safety_settings = [
     types.SafetySetting(
         category="HARM_CATEGORY_DANGEROUS_CONTENT",
         threshold="BLOCK_ONLY_HIGH",
