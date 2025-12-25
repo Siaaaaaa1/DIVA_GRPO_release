@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from openai import AzureOpenAI, OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,6 @@ Format (example with 4 steps):
 \boxed{[final answer]}
 '''
 
-# 移除了 PROMPT_THINK_STEP_REFINE，因为不再需要二次纠正
-
 # ================= Parsers =================
 
 def add_image_tag_if_missing(text: str) -> str:
@@ -56,7 +54,7 @@ def parse_variants(response: str) -> List[str]:
     variants = []
     number = 1
     while True:
-        # 尝试匹配多种格式
+        # Try matching multiple formats
         patterns = [
             rf'<variant{number}>(.*?)</variant{number}>',
             rf'<variant{number}>(.*?)(?=<variant{number+1}>)',
@@ -95,7 +93,7 @@ def parse_think_steps(response: str) -> List[str]:
     return steps
 
 def parse_boxed_answer(response: str) -> str:
-    match = re.search(r'boxed\{(.*?)\}', response) # 简化匹配，原正则较复杂
+    match = re.search(r'boxed\{(.*?)\}', response) # Simplified match
     if not match:
         match = re.search(r'boxed\s+(.*)', response)
     return match.group(1) if match else ""
@@ -103,7 +101,7 @@ def parse_boxed_answer(response: str) -> str:
 # ================= API Base Class =================
 
 class BaseLLMClient(ABC):
-    """API 调用基类"""
+    """Base class for API calls"""
     
     @abstractmethod
     def generate_content(self, messages: List[Dict[str, Any]]) -> str:
@@ -114,7 +112,7 @@ class BaseLLMClient(ABC):
         if not image_bytes:
             return ""
         fmt = imghdr.what(None, h=image_bytes) or 'png'
-        # 简单映射
+        # Simple mapping
         fmt_map = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png'}
         fmt = fmt_map.get(fmt, 'png')
         b64_img = base64.b64encode(image_bytes).decode('utf-8')
@@ -127,7 +125,7 @@ class AzureQwenClient(BaseLLMClient):
         self.client = AzureOpenAI(
             api_key=api_key,
             azure_endpoint=endpoint,
-            api_version="2025-01-01-preview", # 根据实际情况调整
+            api_version="2025-01-01-preview", # Adjust as needed
         )
         self.deployment = deployment
 
@@ -145,7 +143,7 @@ class AzureQwenClient(BaseLLMClient):
             raise
 
     def generate_variants(self, problem_text: str) -> List[str]:
-        """生成 Variants"""
+        """Generate Variants"""
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": PROMPT_VARIANTS + problem_text}
@@ -154,9 +152,9 @@ class AzureQwenClient(BaseLLMClient):
         return parse_variants(response)
 
     def generate_think_steps(self, problem_text: str, correct_answer: str, image_bytes: bytes = None) -> Dict[str, Any]:
-        """生成 Think Steps (Extraction + Verification)"""
+        """Generate Think Steps (Extraction + Verification)"""
         
-        # 1. 构造请求
+        # 1. Construct Request
         content = [{"type": "text", "text": PROMPT_THINK_STEP_INIT}]
         
         if image_bytes:
@@ -170,7 +168,7 @@ class AzureQwenClient(BaseLLMClient):
             {"role": "user", "content": content}
         ]
         
-        # 2. 生成并解析
+        # 2. Generate and Parse
         response = self.generate_content(messages)
         steps = parse_think_steps(response)
         generated_ans = parse_boxed_answer(response)
@@ -181,9 +179,9 @@ class AzureQwenClient(BaseLLMClient):
         if not generated_ans:
              return {"status": "failed", "reason": "No boxed answer parsed"}
 
-        # 3. 对比答案 (Check consistency)
-        # 这里进行简单的字符串对比 (去除首尾空格)
-        # 如果需要更复杂的数学等价性判断 (如 1/2 vs 0.5)，需要引入额外的库
+        # 3. Compare Answers (Check consistency)
+        # Performing simple string comparison (stripping whitespace)
+        # For more complex mathematical equivalence (e.g., 1/2 vs 0.5), extra libraries would be needed.
         if str(generated_ans).strip() == str(correct_answer).strip():
             return {
                 "status": "success",

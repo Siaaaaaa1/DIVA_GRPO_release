@@ -1,59 +1,102 @@
 import os
-import json
 import argparse
 import pandas as pd
 import multiprocessing
+import time
 from pathlib import Path
 from tqdm import tqdm
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-# 导入上面定义的模块
-from llm_client import AzureQwenClient, BaseLLMClient
+# Import local module
+from llm_client import AzureQwenClient
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()] 
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-def process_chunk(chunk_df: pd.DataFrame, output_json_path: str, api_config: Dict[str, str]):
-    """处理单个数据块并保存为 JSON (作为中间检查点)"""
-    
-    # 在子进程中初始化客户端
+def writer_listener(queue: multiprocessing.Queue, output_path: str):
+    """
+    Listener process that consumes results from the queue and writes to a single Parquet file incrementally.
+    """
+    buffer = []
+    writer = None
+    BATCH_SIZE = 100
+    total_written = 0
+
+    logger.info(f"Writer listener started. Output file: {output_path}")
+
+    while True:
+        # Get record from queue
+        record = queue.get()
+        
+        # Check for kill signal
+        if record == "KILL":
+            break
+            
+        buffer.append(record)
+        
+        # Flush buffer if full
+        if len(buffer) >= BATCH_SIZE:
+            writer = flush_buffer(buffer, output_path, writer)
+            total_written += len(buffer)
+            buffer = []
+            
+    # Final flush
+    if buffer:
+        writer = flush_buffer(buffer, output_path, writer)
+        total_written += len(buffer)
+
+    if writer:
+        writer.close()
+        
+    logger.info(f"Writer finished. Total rows written: {total_written}")
+
+def flush_buffer(buffer: List[Dict], output_path: str, writer: Optional[pq.ParquetWriter]) -> pq.ParquetWriter:
+    """Helper to write a buffer to the parquet file."""
+    try:
+        df_batch = pd.DataFrame(buffer)
+        table = pa.Table.from_pandas(df_batch)
+        
+        # Initialize writer on first batch
+        if writer is None:
+            writer = pq.ParquetWriter(output_path, table.schema)
+        
+        # Handle schema mismatch if necessary (e.g. alignment)
+        if table.schema != writer.schema:
+            table = table.cast(writer.schema)
+            
+        writer.write_table(table)
+    except Exception as e:
+        logger.error(f"Failed to write batch: {e}")
+        
+    return writer
+
+def process_chunk_worker(chunk_df: pd.DataFrame, queue: multiprocessing.Queue, api_config: Dict[str, str], worker_id: int):
+    """
+    Worker process: Generates data and puts it into the queue.
+    """
+    # Initialize client inside the child process
     client = AzureQwenClient(
         api_key=api_config['key'],
         endpoint=api_config['endpoint'],
         deployment=api_config.get('deployment', 'qwen-vl-max-latest')
     )
     
-    results = []
-    
-    # 尝试加载已有的进度（如果中断过）
-    if os.path.exists(output_json_path):
-        try:
-            with open(output_json_path, 'r', encoding='utf-8') as f:
-                results = json.load(f)
-            logger.info(f"Resuming {os.path.basename(output_json_path)} with {len(results)} items processed.")
-        except:
-            results = []
-
-    # 找出已经处理过的 ID
-    processed_ids = set(item.get('id') for item in results)
-
-    for idx, row in tqdm(chunk_df.iterrows(), total=len(chunk_df), desc=f"Processing {os.path.basename(output_json_path)}"):
-        row_id = row.get('id', idx)
-        
-        if row_id in processed_ids:
-            continue
-
+    # Use tqdm position to avoid overlapping bars
+    for idx, row in tqdm(chunk_df.iterrows(), total=len(chunk_df), desc=f"Worker-{worker_id}", position=worker_id):
         try:
             problem = row['problem']
             answer = row['answer']
+            row_id = row.get('id', idx)
             
-            # 获取图片数据
+            # Extract image bytes
             image_data = None
             if 'images' in row and row['images']:
                 img_entry = row['images']
@@ -62,48 +105,32 @@ def process_chunk(chunk_df: pd.DataFrame, output_json_path: str, api_config: Dic
                 elif isinstance(img_entry, bytes):
                     image_data = img_entry
             
-            # ============ 1. 生成 Variants ============
+            # 1. Generate Variants
             variants = client.generate_variants(problem)
             
-            # ============ 2. 生成 Think Steps (包含对比检查) ============
-            # 注意：这里直接传入 answer 用于内部校验
+            # 2. Generate Think Steps (Verification included)
             think_result = client.generate_think_steps(problem, answer, image_data)
             
             if think_result['status'] == 'success':
-                # 构建结果字典
-                processed_item = row.to_dict()
+                item = row.to_dict()
+                item['variants'] = variants
+                item['think_steps'] = think_result['think_steps']
+                item['think_answer'] = think_result['think_answer']
                 
-                # 不存 bytes 到 json
-                if 'images' in processed_item:
-                    del processed_item['images'] 
-                
-                processed_item['variants'] = variants
-                processed_item['think_steps'] = think_result['think_steps'] # 使用初次生成的 steps
-                processed_item['think_answer'] = think_result['think_answer']
-                
-                results.append(processed_item)
+                # Send to writer
+                queue.put(item)
             else:
-                # 答案不一致或生成失败，丢弃该数据
-                logger.warning(f"Row {row_id} skipped: {think_result.get('reason')}")
-        
+                # Optional: Log failure reason slightly less frequently to avoid spam
+                pass
+                
         except Exception as e:
-            logger.error(f"Error processing row {row.get('id', 'unknown')}: {e}")
+            logger.error(f"Worker-{worker_id} error on row {row.get('id')}: {e}")
             continue
-
-        # 每处理 5 条保存一次，防止丢失
-        if len(results) % 5 == 0:
-             with open(output_json_path, 'w', encoding='utf-8') as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-
-    # 最终保存
-    with open(output_json_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
 
 def main():
     parser = argparse.ArgumentParser(description="Augment dataset with Variants and Think Steps using LLM.")
     parser.add_argument("--input", type=str, required=True, help="Path to input Parquet file")
-    parser.add_argument("--output", type=str, required=True, help="Path to output Parquet file (will be used as prefix for chunks)")
+    parser.add_argument("--output", type=str, required=True, help="Path to output Parquet file (Single merged file)")
     parser.add_argument("--workers", type=int, default=4, help="Number of multiprocessing workers")
     parser.add_argument("--api_key", type=str, default=os.getenv("AZURE_OPENAI_KEY"), help="Azure API Key")
     parser.add_argument("--endpoint", type=str, default=os.getenv("AZURE_OPENAI_ENDPOINT"), help="Azure Endpoint")
@@ -111,91 +138,55 @@ def main():
     args = parser.parse_args()
     
     if not args.api_key or not args.endpoint:
-        raise ValueError("API Key and Endpoint must be provided via arguments or environment variables.")
+        raise ValueError("API Key and Endpoint must be provided.")
 
     api_config = {
         "key": args.api_key,
         "endpoint": args.endpoint,
-        "deployment": "qwen-vl-max-latest" 
+        "deployment": "qwen-vl-max-latest"
     }
 
-    # 读取 Parquet
+    # Load Dataset
     logger.info(f"Loading dataset from {args.input}...")
     df = pd.read_parquet(args.input)
     logger.info(f"Loaded {len(df)} rows.")
+    
+    # Prepare Output Dir
+    output_path = Path(args.output)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
 
-    # 创建临时输出目录
-    temp_dir = Path(args.output).parent / "temp_processing"
-    temp_dir.mkdir(exist_ok=True, parents=True)
+    # Use Manager Queue for IPC
+    manager = multiprocessing.Manager()
+    queue = manager.Queue()
 
-    # 切分数据块
+    # Start Writer Listener
+    listener = multiprocessing.Process(target=writer_listener, args=(queue, str(output_path)))
+    listener.start()
+
+    # Start Workers
     chunk_size = (len(df) + args.workers - 1) // args.workers
     chunks = [df.iloc[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
     
-    processes = []
-    temp_files = []
-
+    workers = []
     logger.info(f"Starting {len(chunks)} workers...")
     
     for i, chunk in enumerate(chunks):
-        temp_file = temp_dir / f"worker_{i}.json"
-        temp_files.append(str(temp_file))
-        
         p = multiprocessing.Process(
-            target=process_chunk,
-            args=(chunk, str(temp_file), api_config)
+            target=process_chunk_worker,
+            args=(chunk, queue, api_config, i)
         )
-        processes.append(p)
+        workers.append(p)
         p.start()
 
-    for p in processes:
+    # Wait for all workers to finish
+    for p in workers:
         p.join()
 
-    logger.info("All workers finished. Processing chunks to Parquet...")
+    # Signal listener to stop
+    queue.put("KILL")
+    listener.join()
 
-    # ============ 分块保存逻辑 ============
-    # 不再将所有数据 load 进内存合并，而是逐个处理 chunk 并保存为独立的 parquet 文件
-    
-    # 获取原始图片的映射 (如果内存够放索引的话；如果不够，这里也需要优化，但通常 id->image 映射还好)
-    # 为了避免 OOM，我们假设这里不一次性 copy 整个 df，而是按需提取
-    # 如果数据集极大，建议直接在 process_chunk 里处理完图片（不转json），但多进程写 parquet 比较麻烦。
-    # 这里我们采用：读取 json -> 匹配 df 中的图片 -> 保存为 output_part_xx.parquet
-    
-    base_output_name = str(Path(args.output).stem)
-    output_dir = Path(args.output).parent
-    
-    original_images = df[['id', 'images']] if 'images' in df.columns else pd.DataFrame()
-
-    total_saved = 0
-    for i, tf in enumerate(temp_files):
-        if not os.path.exists(tf):
-            continue
-            
-        try:
-            with open(tf, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                
-            if not data:
-                continue
-                
-            chunk_result_df = pd.DataFrame(data)
-            
-            # 恢复图片
-            if 'images' not in chunk_result_df.columns and not original_images.empty and 'id' in chunk_result_df.columns:
-                # 仅在当前 chunk 的数据中做 merge
-                chunk_result_df = pd.merge(chunk_result_df, original_images, on='id', how='left')
-            
-            # 构造分块文件名
-            chunk_output_path = output_dir / f"{base_output_name}_part_{i}.parquet"
-            chunk_result_df.to_parquet(chunk_output_path)
-            
-            logger.info(f"Saved chunk {i} with {len(chunk_result_df)} rows to {chunk_output_path}")
-            total_saved += len(chunk_result_df)
-            
-        except Exception as e:
-            logger.error(f"Failed to process temp file {tf}: {e}")
-
-    logger.info(f"Done. Total rows saved: {total_saved}")
+    logger.info("Processing complete. All data saved to single file.")
 
 if __name__ == "__main__":
     main()

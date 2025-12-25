@@ -1,63 +1,45 @@
-# Multimodal Reasoning & Variation Synthesis
+# Difficulty Variation Pipeline
 
-This module provides a streamlined pipeline for augmenting multimodal datasets using Large Language Models (LLMs). It automates the generation of **Problem Variants** and **Chain-of-Thought (CoT) Reasoning Steps** to enhance dataset diversity and difficulty.
+This pipeline enhances datasets by using an LLM (Qwen-VL) to generate **Variants** and **Think Steps** for original problems. 
 
-## 📂 Core Components
+## Features
 
-The pipeline is built around two clean, decoupled files designed to replace legacy scripts:
+* **Streamlined Processing**: Uses a **Producer-Consumer** architecture. Multiple workers generate data in parallel, while a single listener process continuously streams the results into **one single output file**.
+* **Memory Efficient**: Data is flushed to disk every 100 records (Row Groups). This prevents memory overflow (OOM) even with large datasets.
+* **Quality Control**: Automatically verifies that the generated reasoning steps (`think_steps`) lead to the correct answer (`\boxed{answer}`) before saving.
 
-**`augment_dataset.py`**
-* **Role**: The main entry point (Driver Script).
-* **Functionality**: Handles data loading (Parquet), multiprocessing dispatch, error handling, and incremental saving. It ensures that large datasets are processed efficiently without data loss.
+## Requirements
 
-
-**`llm_client.py`**
-* **Role**: The logic & API layer.
-* **Functionality**: Encapsulates all interactions with the Azure OpenAI/Qwen API. It manages prompt engineering, image encoding (Base64), and robust parsing of XML-tagged model outputs (e.g., `<step1>`, `<variant1>`).
-
-
-
-## ⚙️ Setup
-
-### 1. Dependencies
-
-Ensure your environment supports the following:
+Ensure dependencies are installed (`pyarrow`, `pandas`, etc.) and configure your Azure OpenAI environment variables:
 
 ```bash
-pip install pandas pyarrow openai tenacity tqdm
-
+export AZURE_OPENAI_KEY="your_key"
+export AZURE_OPENAI_ENDPOINT="your_endpoint"
 ```
 
-### 2. Environment Variables
+Usage
+Run augment_dataset.py to start processing:
 
-You should set your Azure OpenAI credentials. Alternatively, you can pass them as command-line arguments.
-
-```bash
-export AZURE_OPENAI_KEY="your-api-key-here"
-export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-
-```
-
-## 🚀 Usage
-
-Run the `augment_dataset.py` script to process your `.parquet` dataset.
-
-### Basic Command
 
 ```bash
-python augment_dataset.py \
-  --input "datasets/train_data.parquet" \
-  --output "datasets/train_data_augmented.parquet" \
+python verl/difficulty_variation/augment_dataset.py \
+  --input "path/to/input.parquet" \
+  --output "path/to/output.parquet" \
   --workers 8
-
 ```
 
-## 📊 Output Data Structure
+Arguments
+- --input: Path to the input Parquet dataset.
 
-The script generates a new Parquet file containing the original columns plus the following new fields:
+- --output: Full path to the final single output Parquet file (e.g., data/processed/final_dataset.parquet).
 
-| Column Name | Type | Description |
-| --- | --- | --- |
-| `variants` | `List[str]` | A list of 5 rephrased versions of the original problem (preserving the correct answer). |
-| `think_steps` | `List[str]` | Step-by-step reasoning traces (CoT) generated and refined by the model. |
-| `think_answer` | `str` | The final answer extracted from the reasoning process (used for consistency checks). |
+- --workers: Number of parallel worker processes.
+
+Output Structure
+The script generates a single Parquet file at the specified output path. The file contains the original columns plus:
+
+- variants: (List[str]) 5 different wordings of the problem.
+
+- think_steps: (List[str]) Step-by-step reasoning process.
+
+- think_answer: (str) The final answer extracted from the reasoning.
